@@ -22,8 +22,14 @@ report_channels = {}
 # =======================
 async def init_db():
     async with aiosqlite.connect("bot.db") as db:
+
+        # 古いテーブル削除
+        await db.execute("DROP TABLE IF EXISTS reports")
+        await db.execute("DROP TABLE IF EXISTS report_settings")
+
+        # reports
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
+        CREATE TABLE reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
             guild_id TEXT,
@@ -34,20 +40,11 @@ async def init_db():
         )
         """)
 
-        async def init_db():
-            async with aiosqlite.connect("bot.db") as db:
-
-                await db.execute("DROP TABLE IF EXISTS reports")
-
+        # report_settings
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            guild_id TEXT,
-            title TEXT,
-            detail TEXT,
-            status TEXT,
-            created_at TEXT
+        CREATE TABLE report_settings (
+            guild_id TEXT PRIMARY KEY,
+            channel_id TEXT
         )
         """)
 
