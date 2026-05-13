@@ -1,7 +1,5 @@
 import asyncio
-
 import discord
-from discord.app_commands import check
 from discord.app_commands import check
 from discord.ext import commands, tasks
 import aiosqlite
@@ -39,30 +37,40 @@ async def init_db():
         )
         """)
 
-        # ===== reports（古いDB対応のためstatusはここでは入れない）=====
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
+            CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
             guild_id TEXT,
             title TEXT,
             detail TEXT,
+            status TEXT,
             created_at TEXT
-        )
+            )
         """)
 
         # ===== report_settings =====
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS report_settings (
-            guild_id TEXT PRIMARY KEY,
-            channel_id TEXT
-        )
+            CREATE TABLE IF NOT EXISTS report_settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            guild_id TEXT,
+            title TEXT,
+            detail TEXT,
+            channel_id TEXT,
+            status TEXT DEFAULT '未対応',
+            created_at TEXT
+            )
         """)
 
         await db.commit()
 
         # ⭐ここでマイグレーション実行
         await migrate(db)
+
+async def migrate(db):
+    """マイグレーション処理"""
+    pass
 
 
 # =========================
