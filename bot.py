@@ -296,12 +296,6 @@ async def report(
             )
 
             log_embed.add_field(
-                name="送信者ID",
-                value=interaction.user.id,
-                inline=False
-            )
-
-            log_embed.add_field(
                 name="内容",
                 value=f"{title}\n{detail}",
                 inline=False
