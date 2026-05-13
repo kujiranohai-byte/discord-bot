@@ -34,12 +34,22 @@ async def init_db():
         )
         """)
 
+        async def init_db():
+            async with aiosqlite.connect("bot.db") as db:
+
+                await db.execute("DROP TABLE IF EXISTS reports")
+
         await db.execute("""
-CREATE TABLE IF NOT EXISTS report_settings (
-    guild_id TEXT PRIMARY KEY,
-    channel_id TEXT
-)
-""")
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            guild_id TEXT,
+            title TEXT,
+            detail TEXT,
+            status TEXT,
+            created_at TEXT
+        )
+        """)
 
         await db.commit()
 
