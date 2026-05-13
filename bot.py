@@ -38,7 +38,7 @@ async def init_db():
             channel_id TEXT
         )
         """)
-        
+
         await db.commit()
 
 
@@ -187,7 +187,7 @@ class ReplyModal(discord.ui.Modal):
 class ReportView(discord.ui.View):
 
     def __init__(self):
-
+        
         super().__init__(timeout=None)
 
     @discord.ui.button(
@@ -541,7 +541,7 @@ async def on_ready():
     await init_db()
     await bot.tree.sync()
 
-    bot.add_view(ReportView(0, 0))
+    bot.add_view(ReportView())
 
     scheduler.start()
 
