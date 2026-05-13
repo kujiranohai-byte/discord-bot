@@ -74,41 +74,57 @@ async def get_log_channel(guild_id):
 # 通報設定
 # =========================
 
-@bot.tree.command(
-    name="reportsetup",
-    description="匿名通報チャンネル設定"
-)
-async def reportsetup(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel
-):
+@bot.tree.command(name="report", description="匿名通報")
+async def report(interaction: discord.Interaction, title: str, detail: str):
 
-    if not interaction.user.guild_permissions.administrator:
+    try:
+        await interaction.response.defer(ephemeral=True)
 
-        return await interaction.response.send_message(
-            "管理者のみ",
+        async with aiosqlite.connect("bot.db") as db:
+            cur = await db.execute("""
+            INSERT INTO reports (user_id, guild_id, title, detail, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """, (
+                str(interaction.user.id),
+                str(interaction.guild.id),
+                title,
+                detail,
+                str(datetime.now())
+            ))
+            await db.commit()
+
+            report_id = cur.lastrowid
+
+        log_ch = await get_log_channel(interaction.guild.id)
+
+        if not log_ch:
+            return await interaction.followup.send(
+                "ログチャンネル取得失敗",
+                ephemeral=True
+            )
+
+        embed = discord.Embed(
+            title="📨 匿名通報",
+            color=0xff5555
+        )
+
+        embed.add_field(name="整理番号", value=report_id, inline=False)
+        embed.add_field(name="送信者ID", value=interaction.user.id, inline=False)
+        embed.add_field(name="内容", value=f"{title}\n{detail}", inline=False)
+        embed.add_field(name="日時", value=str(datetime.now()), inline=False)
+
+        await log_ch.send(embed=embed)
+
+        await interaction.followup.send(
+            f"通報完了（ID:{report_id}）",
             ephemeral=True
         )
 
-    async with aiosqlite.connect("bot.db") as db:
-
-        await db.execute("""
-        INSERT OR REPLACE INTO report_settings(
-            guild_id,
-            channel_id
+    except Exception as e:
+        await interaction.followup.send(
+            f"エラー:\n{e}",
+            ephemeral=True
         )
-        VALUES (?, ?)
-        """, (
-            str(interaction.guild.id),
-            str(channel.id)
-        ))
-
-        await db.commit()
-
-    await interaction.response.send_message(
-        f"{channel.mention} に設定しました",
-        ephemeral=True
-    )
 
 # =========================
 # 通報返信モーダル
@@ -187,7 +203,7 @@ class ReplyModal(discord.ui.Modal):
 class ReportView(discord.ui.View):
 
     def __init__(self):
-        
+
         super().__init__(timeout=None)
 
     @discord.ui.button(
