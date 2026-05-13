@@ -31,7 +31,15 @@ async def init_db():
 
     async with aiosqlite.connect("bot.db") as db:
 
-        # reports
+        # ===== バージョン管理テーブル =====
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS db_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """)
+
+        # ===== reports（古いDB対応のためstatusはここでは入れない）=====
         await db.execute("""
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,12 +47,11 @@ async def init_db():
             guild_id TEXT,
             title TEXT,
             detail TEXT,
-            status TEXT,
             created_at TEXT
         )
         """)
 
-        # report_settings
+        # ===== report_settings =====
         await db.execute("""
         CREATE TABLE IF NOT EXISTS report_settings (
             guild_id TEXT PRIMARY KEY,
@@ -53,6 +60,9 @@ async def init_db():
         """)
 
         await db.commit()
+
+        # ⭐ここでマイグレーション実行
+        await migrate(db)
 
 
 # =========================
