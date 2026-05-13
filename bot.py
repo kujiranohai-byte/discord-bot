@@ -36,6 +36,7 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS report_settings (
             guild_id TEXT PRIMARY KEY,
             channel_id TEXT
+            status TEXT,
         )
         """)
 
@@ -71,58 +72,256 @@ async def get_log_channel(guild_id):
     )
 
 # =========================
-# 通報設定
+# 通報セットアップ
 # =========================
 
-@bot.tree.command(name="report", description="匿名通報")
-async def report(interaction: discord.Interaction, title: str, detail: str):
+@bot.tree.command(
+    name="reportsetup",
+    description="通報送信先を設定"
+)
+async def reportsetup(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel
+):
+
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message(
+            "管理者のみ",
+            ephemeral=True
+        )
+
+    async with aiosqlite.connect("bot.db") as db:
+
+        await db.execute("""
+        INSERT OR REPLACE INTO report_settings
+        (guild_id, channel_id)
+        VALUES (?, ?)
+        """, (
+            str(interaction.guild.id),
+            str(channel.id)
+        ))
+
+        await db.commit()
+
+    report_channels[interaction.guild.id] = channel.id
+
+    await interaction.response.send_message(
+        f"通報送信先を {channel.mention} に設定しました",
+        ephemeral=True
+    )
+# =========================
+# 通報
+# =========================
+
+@bot.tree.command(
+    name="report",
+    description="匿名通報"
+)
+async def report(
+    interaction: discord.Interaction,
+    title: str,
+    detail: str
+):
 
     try:
-        await interaction.response.defer(ephemeral=True)
 
-        async with aiosqlite.connect("bot.db") as db:
+        await interaction.response.defer(
+            ephemeral=True
+        )
+
+        # =========================
+        # 通報先取得
+        # =========================
+
+        channel_id = report_channels.get(
+            interaction.guild.id
+        )
+
+        if not channel_id:
+
+            async with aiosqlite.connect(
+                "bot.db"
+            ) as db:
+
+                cur = await db.execute("""
+                SELECT channel_id
+                FROM report_settings
+                WHERE guild_id=?
+                """, (
+                    str(interaction.guild.id),
+                ))
+
+                row = await cur.fetchone()
+
+            if not row:
+
+                return await interaction.followup.send(
+                    "先に /reportsetup をしてください",
+                    ephemeral=True
+                )
+
+            channel_id = int(row[0])
+
+            report_channels[
+                interaction.guild.id
+            ] = channel_id
+
+        log_ch = interaction.guild.get_channel(
+            channel_id
+        )
+
+        if not log_ch:
+
+            return await interaction.followup.send(
+                "通報チャンネル取得失敗",
+                ephemeral=True
+            )
+
+        # =========================
+        # DB保存
+        # =========================
+
+        async with aiosqlite.connect(
+            "bot.db"
+        ) as db:
+
             cur = await db.execute("""
-            INSERT INTO reports (user_id, guild_id, title, detail, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO reports (
+                user_id,
+                guild_id,
+                title,
+                detail,
+                status,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 str(interaction.user.id),
                 str(interaction.guild.id),
                 title,
                 detail,
+                "未対応",
                 str(datetime.now())
             ))
+
             await db.commit()
 
             report_id = cur.lastrowid
 
-        log_ch = await get_log_channel(interaction.guild.id)
+        # =========================
+        # 管理サーバーログ取得
+        # =========================
 
-        if not log_ch:
-            return await interaction.followup.send(
-                "ログチャンネル取得失敗",
-                ephemeral=True
-            )
+        manage_log_ch = await get_log_channel(
+            interaction.guild.id
+        )
+
+        # =========================
+        # 通報Embed
+        # =========================
 
         embed = discord.Embed(
             title="📨 匿名通報",
             color=0xff5555
         )
 
-        embed.add_field(name="整理番号", value=report_id, inline=False)
-        embed.add_field(name="送信者ID", value=interaction.user.id, inline=False)
-        embed.add_field(name="内容", value=f"{title}\n{detail}", inline=False)
-        embed.add_field(name="日時", value=str(datetime.now()), inline=False)
+        embed.add_field(
+            name="整理番号",
+            value=report_id,
+            inline=False
+        )
 
-        await log_ch.send(embed=embed)
+        embed.add_field(
+            name="送信者ID",
+            value=interaction.user.id,
+            inline=False
+        )
+
+        embed.add_field(
+            name="内容",
+            value=f"{title}\n{detail}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="状態",
+            value="未対応",
+            inline=False
+        )
+
+        embed.add_field(
+            name="日時",
+            value=str(datetime.now()),
+            inline=False
+        )
+
+        # =========================
+        # サーバー通報先へ送信
+        # =========================
+
+        await log_ch.send(
+            embed=embed,
+            view=ReportView()
+        )
+
+        # =========================
+        # 管理サーバーへログ
+        # =========================
+
+        if manage_log_ch:
+
+            log_embed = discord.Embed(
+                title="📋 通報ログ",
+                color=0x2b2d31
+            )
+
+            log_embed.add_field(
+                name="整理番号",
+                value=report_id,
+                inline=False
+            )
+
+            log_embed.add_field(
+                name="サーバーID",
+                value=interaction.guild.id,
+                inline=False
+            )
+
+            log_embed.add_field(
+                name="送信者ID",
+                value=interaction.user.id,
+                inline=False
+            )
+
+            log_embed.add_field(
+                name="内容",
+                value=f"{title}\n{detail}",
+                inline=False
+            )
+
+            log_embed.add_field(
+                name="日時",
+                value=str(datetime.now()),
+                inline=False
+            )
+
+            await manage_log_ch.send(
+                embed=log_embed
+            )
+
+        # =========================
+        # 完了通知
+        # =========================
 
         await interaction.followup.send(
-            f"通報完了（ID:{report_id}）",
+            f"匿名通報を送信しました\n整理番号: {report_id}",
             ephemeral=True
         )
 
     except Exception as e:
+
         await interaction.followup.send(
-            f"エラー:\n{e}",
+            f"エラー発生:\n{e}",
             ephemeral=True
         )
 
