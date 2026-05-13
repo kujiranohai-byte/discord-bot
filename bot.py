@@ -2,6 +2,9 @@ import discord
 from discord.ext import commands, tasks
 import aiosqlite
 from datetime import datetime, timedelta
+from datetime import timezone
+
+JST = timezone(timedelta(hours=9))
 
 # ===== ログ管理サーバー設定 =====
 LOG_GUILD_ID = 1500396286271295578
@@ -22,10 +25,6 @@ report_channels = {}
 # =======================
 async def init_db():
     async with aiosqlite.connect("bot.db") as db:
-
-        # 古いテーブル削除
-        await db.execute("DROP TABLE IF EXISTS reports")
-        await db.execute("DROP TABLE IF EXISTS report_settings")
 
         # reports
         await db.execute("""
@@ -593,6 +592,68 @@ class AnnounceView(discord.ui.View):
         await ch.send(embed=discord.Embed(description=self.content))
         await interaction.response.send_message("送信完了", ephemeral=True)
         self.stop()
+
+@discord.ui.button(
+    label="予約送信",
+    style=discord.ButtonStyle.secondary
+)
+async def schedule(
+    self,
+    interaction: discord.Interaction,
+    button: discord.ui.Button
+):
+
+    await interaction.response.send_message(
+        "送信日時を入力してください\n例: 2026/05/13 21:30:00",
+        ephemeral=True
+    )
+
+    def check(m):
+
+        return (
+            m.author == interaction.user
+            and m.channel == interaction.channel
+        )
+
+    try:
+
+        msg = await bot.wait_for(
+            "message",
+            timeout=60,
+            check=check
+        )
+
+        run_at = datetime.strptime(
+            msg.content,
+            "%Y/%m/%d %H:%M:%S"
+        ).astimezone(JST)
+
+        scheduled.append({
+            "guild_id": interaction.guild.id,
+            "content": self.content,
+            "run_at": run_at
+        })
+
+        await interaction.followup.send(
+            f"予約完了\n送信日時: {msg.content}",
+            ephemeral=True
+        )
+
+        self.stop()
+
+    except ValueError:
+
+        await interaction.followup.send(
+            "形式が違います\n例: 2026/05/13 21:30:00",
+            ephemeral=True
+        )
+
+    except:
+
+        await interaction.followup.send(
+            "予約キャンセル",
+            ephemeral=True
+        )
 
 # =======================
 # スケジューラー
