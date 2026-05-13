@@ -239,11 +239,6 @@ async def report(
             inline=False
         )
 
-        embed.add_field(
-            name="送信者ID",
-            value=interaction.user.id,
-            inline=False
-        )
 
         embed.add_field(
             name="内容",
@@ -294,6 +289,7 @@ async def report(
                 value=interaction.guild.id,
                 inline=False
             )
+
 
             log_embed.add_field(
                 name="内容",
@@ -633,15 +629,22 @@ async def on_message(message):
 # =======================
 @bot.event
 async def on_ready():
+
     await init_db()
 
-    try:
-        synced = await bot.tree.sync()
-        print(f"同期完了: {len(synced)}")
-        for cmd in synced:
-            print(f"  - {cmd.name}")
-    except Exception as e:
-        print(f"コマンド同期エラー: {e}")
+    async with aiosqlite.connect("bot.db") as db:
+
+        cur = await db.execute("""
+        SELECT guild_id, channel_id
+        FROM report_settings
+        """)
+
+        rows = await cur.fetchall()
+
+        for row in rows:
+            report_channels[int(row[0])] = int(row[1])
+
+    await bot.tree.sync()
 
     bot.add_view(ReportView())
 
