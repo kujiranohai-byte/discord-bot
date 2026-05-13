@@ -9,6 +9,8 @@ LOG_CATEGORY_ID = 1500396365199446086
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
+intents.guild_messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 announce_config = {}
@@ -635,8 +637,10 @@ async def on_ready():
     try:
         synced = await bot.tree.sync()
         print(f"同期完了: {len(synced)}")
+        for cmd in synced:
+            print(f"  - {cmd.name}")
     except Exception as e:
-        print(e)
+        print(f"コマンド同期エラー: {e}")
 
     bot.add_view(ReportView())
 
