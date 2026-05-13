@@ -33,12 +33,11 @@ async def init_db():
         """)
 
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS report_settings (
-            guild_id TEXT PRIMARY KEY,
-            channel_id TEXT
-            status TEXT,
-        )
-        """)
+CREATE TABLE IF NOT EXISTS report_settings (
+    guild_id TEXT PRIMARY KEY,
+    channel_id TEXT
+)
+""")
 
         await db.commit()
 
@@ -632,11 +631,17 @@ async def on_message(message):
 @bot.event
 async def on_ready():
     await init_db()
-    await bot.tree.sync()
+
+    try:
+        synced = await bot.tree.sync()
+        print(f"同期完了: {len(synced)}")
+    except Exception as e:
+        print(e)
 
     bot.add_view(ReportView())
 
-    scheduler.start()
+    if not scheduler.is_running():
+        scheduler.start()
 
     print("READY OK:", bot.user)
 
