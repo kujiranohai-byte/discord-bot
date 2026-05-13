@@ -25,11 +25,95 @@ report_channels = {}
 # =======================
 # DB
 # =======================
+import aiosqlite
+
+DB_PATH = "bot.db"
+
+async def get_db_version(db):
+    cur = await db.execute("SELECT value FROM db_meta WHERE key='version'")
+    row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def set_db_version(db, version: int):
+    await db.execute("""
+    INSERT OR REPLACE INTO db_meta (key, value)
+    VALUES ('version', ?)
+    """, (str(version),))
+
+async def migrate(db):
+    version = await get_db_version(db)
+
+    # =========================
+    # v1 初期構造
+    # =========================
+    if version < 1:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            guild_id TEXT,
+            title TEXT,
+            detail TEXT,
+            status TEXT DEFAULT '未対応',
+            created_at TEXT
+        )
+        """)
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS report_settings (
+            guild_id TEXT PRIMARY KEY,
+            channel_id TEXT
+        )
+        """)
+
+        version = 1
+
+    # =========================
+    # v2 アナウンス設定永続化
+    # =========================
+    if version < 2:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS announce_settings (
+            guild_id TEXT PRIMARY KEY,
+            source_id TEXT,
+            target_id TEXT
+        )
+        """)
+
+        version = 2
+
+    # =========================
+    # v3 予約送信永続化
+    # =========================
+    if version < 3:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id TEXT,
+            content TEXT,
+            run_at TEXT
+        )
+        """)
+
+        version = 3
+
+    # =========================
+    # v4 インデックス最適化
+    # =========================
+    if version < 4:
+        await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_reports_guild
+        ON reports(guild_id)
+        """)
+
+        version = 4
+
+    await set_db_version(db, version)
+
 async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
 
-    async with aiosqlite.connect("bot.db") as db:
-
-        # ===== バージョン管理テーブル =====
         await db.execute("""
         CREATE TABLE IF NOT EXISTS db_meta (
             key TEXT PRIMARY KEY,
@@ -37,42 +121,42 @@ async def init_db():
         )
         """)
 
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            guild_id TEXT,
-            title TEXT,
-            detail TEXT,
-            status TEXT,
-            created_at TEXT
-            )
-        """)
-
-        # ===== report_settings =====
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS report_settings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            guild_id TEXT,
-            title TEXT,
-            detail TEXT,
-            channel_id TEXT,
-            status TEXT DEFAULT '未対応',
-            created_at TEXT
-            )
-        """)
+        await migrate(db)
 
         await db.commit()
 
-        # ⭐ここでマイグレーション実行
-        await migrate(db)
+async def load_report_settings():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT guild_id, channel_id FROM report_settings")
+        rows = await cur.fetchall()
 
-async def migrate(db):
-    """マイグレーション処理"""
-    pass
+        return {int(g): int(c) for g, c in rows}
+    
+async def load_announce_settings():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+        SELECT guild_id, source_id, target_id FROM announce_settings
+        """)
+        rows = await cur.fetchall()
 
+        return {
+            int(g): {"source": int(s), "target": int(t)}
+            for g, s, t in rows
+        }
+    
+async def load_scheduled():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT guild_id, content, run_at FROM scheduled")
+        rows = await cur.fetchall()
 
+        return [
+            {
+                "guild_id": int(g),
+                "content": c,
+                "run_at": datetime.fromisoformat(t)
+            }
+            for g, c, t in rows
+        ]
 # =========================
 # ログチャンネル取得
 # =========================
@@ -721,29 +805,15 @@ async def on_message(message):
 # =======================
 @bot.event
 async def on_ready():
-
     await init_db()
 
-    async with aiosqlite.connect("bot.db") as db:
+    global report_channels, announce_config, scheduled
 
-        cur = await db.execute("""
-        SELECT guild_id, channel_id
-        FROM report_settings
-        """)
+    report_channels = await load_report_settings()
+    announce_config = await load_announce_settings()
+    scheduled = await load_scheduled()
 
-        rows = await cur.fetchall()
-
-        for row in rows:
-            report_channels[int(row[0])] = int(row[1])
-
-    await bot.tree.sync()
-
-    bot.add_view(ReportView())
-
-    if not scheduler.is_running():
-        scheduler.start()
-
-    print("READY OK:", bot.user)
+    print("READY:", bot.user)
 
 import os
 TOKEN = os.getenv("TOKEN")
