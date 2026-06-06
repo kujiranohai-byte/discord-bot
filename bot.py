@@ -1,5 +1,7 @@
 import asyncio
 import discord
+from discord import channel
+from discord import guild
 from discord.app_commands import check
 from discord.ext import commands, tasks
 import aiosqlite
@@ -48,26 +50,27 @@ async def migrate(db):
     # v1 初期構造
     # =========================
     if version < 1:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            guild_id TEXT,
-            title TEXT,
-            detail TEXT,
-            status TEXT DEFAULT '未対応',
-            created_at TEXT
-        )
-        """)
 
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS report_settings (
-            guild_id TEXT PRIMARY KEY,
-            channel_id TEXT
-        )
-        """)
+    CREATE TABLE IF NOT EXISTS reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
+        guild_id TEXT,
+        title TEXT,
+        detail TEXT,
+        status TEXT DEFAULT '未対応',
+        created_at TEXT
+    )
+    """)
 
-        version = 1
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS report_settings (
+        guild_id TEXT PRIMARY KEY,
+        channel_id TEXT
+    )
+    """)
+
+    version = 1
 
     # =========================
     # v2 アナウンス設定永続化
@@ -276,9 +279,6 @@ async def report(
 
             channel_id = int(row[0])
 
-            report_channels[
-                interaction.guild.id
-            ] = channel_id
 
         log_ch = interaction.guild.get_channel(
             channel_id
@@ -658,10 +658,19 @@ async def announce_setup(interaction: discord.Interaction,
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("管理者のみ", ephemeral=True)
 
-    announce_config[interaction.guild.id] = {
-        "source": source.id,
-        "target": target.id
-    }
+    async with aiosqlite.connect(DB_PATH) as db:
+
+        await db.execute("""
+    INSERT OR REPLACE INTO announce_settings
+    (guild_id, source_id, target_id)
+    VALUES (?, ?, ?)
+    """, (
+        str(interaction.guild.id),
+        str(source.id),
+        str(target.id)
+    ))
+
+    await db.commit()
 
     await interaction.response.send_message("設定完了", ephemeral=True)
 
@@ -674,15 +683,26 @@ class AnnounceView(discord.ui.View):
         self.content = content
         self.guild_id = guild_id
 
-    def get_target(self, guild):
-        conf = announce_config.get(self.guild_id)
-        if not conf:
+    async def get_target(self, guild):
+
+        async with aiosqlite.connect(DB_PATH) as db:
+
+            cur = await db.execute("""
+        SELECT target_id
+        FROM announce_settings
+        WHERE guild_id=?
+        """, (str(self.guild_id),))
+
+        row = await cur.fetchone()
+
+        if not row:
             return None
-        return guild.get_channel(conf["target"])
+
+        return guild.get_channel(int(row[0]))
 
     @discord.ui.button(label="通常送信", style=discord.ButtonStyle.primary)
     async def normal(self, interaction, button):
-        ch = self.get_target(interaction.guild)
+        ch = await self.get_target(interaction.guild)
         if not ch:
             return await interaction.response.send_message("送信先なし", ephemeral=True)
 
@@ -692,7 +712,7 @@ class AnnounceView(discord.ui.View):
 
     @discord.ui.button(label="Embed送信", style=discord.ButtonStyle.success)
     async def embed(self, interaction, button):
-        ch = self.get_target(interaction.guild)
+        ch = await self.get_target(interaction.guild)
         if not ch:
             return await interaction.response.send_message("送信先なし", ephemeral=True)
 
@@ -700,15 +720,8 @@ class AnnounceView(discord.ui.View):
         await interaction.response.send_message("送信完了", ephemeral=True)
         self.stop()
 
-    @discord.ui.button(
-        label="予約送信",
-        style=discord.ButtonStyle.secondary
-    )
-    async def schedule(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
+    @discord.ui.button(label="予約送信", style=discord.ButtonStyle.secondary)
+    async def schedule(self, interaction, button):
 
         await interaction.response.send_message(
             "送信日時を入力してください\n例: 2026/05/13 21:30:00",
@@ -716,53 +729,34 @@ class AnnounceView(discord.ui.View):
         )
 
         def check(m):
-            return (
-                m.author == interaction.user
-                and m.channel == interaction.channel
-            )
+            return m.author == interaction.user and m.channel == interaction.channel
 
         try:
-            msg = await bot.wait_for(
-                "message",
-                timeout=60,
-                check=check
-            )
+            msg = await bot.wait_for("message", timeout=60, check=check)
 
-            run_at = datetime.strptime(
-                msg.content,
-                "%Y/%m/%d %H:%M:%S"
-            ).replace(tzinfo=JST)
+            run_at = datetime.strptime(msg.content, "%Y/%m/%d %H:%M:%S").replace(tzinfo=JST)
 
-            scheduled.append({
-                "guild_id": interaction.guild.id,
-                "content": self.content,
-                "run_at": run_at
-            })
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("""
+        INSERT INTO scheduled
+        (guild_id, content, run_at)
+        VALUES (?, ?, ?)
+        """, (
+                    str(interaction.guild.id),
+                    self.content,
+                    run_at.isoformat()
+                ))
+                await db.commit()
 
-            await interaction.followup.send(
-                f"予約完了\n送信日時: {msg.content}",
-                ephemeral=True
-            )
-
+            await interaction.followup.send(f"予約完了\n送信日時: {msg.content}", ephemeral=True)
             self.stop()
 
         except ValueError:
-            await interaction.followup.send(
-                "形式が違います\n例: 2026/05/13 21:30:00",
-                ephemeral=True
-            )
-
+            await interaction.followup.send("形式が違います\n例: 2026/05/13 21:30:00", ephemeral=True)
         except asyncio.TimeoutError:
-            await interaction.followup.send(
-                "予約キャンセル",
-                ephemeral=True
-            )
-
+            await interaction.followup.send("予約キャンセル", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(
-                f"エラー: {e}",
-                ephemeral=True
-            )
+            await interaction.followup.send(f"エラー: {e}", ephemeral=True)
 
 # =======================
 # スケジューラー
@@ -813,10 +807,9 @@ async def on_ready():
     announce_config = await load_announce_settings()
     scheduled = await load_scheduled()
 
+    bot.add_view(ReportView())
+
+    if not scheduler.is_running():
+        scheduler.start()
+
     print("READY:", bot.user)
-
-import os
-TOKEN = os.getenv("TOKEN")
-
-
-bot.run(TOKEN)
