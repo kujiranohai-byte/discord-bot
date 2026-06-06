@@ -21,7 +21,6 @@ intents.guild_messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 announce_config = {}
-scheduled = []
 report_channels = {}
 
 # =======================
@@ -52,7 +51,7 @@ async def migrate(db):
     if version < 1:
 
         await db.execute("""
-    CREATE TABLE IF NOT EXISTS reports (
+        CREATE TABLE IF NOT EXISTS reports (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT,
         guild_id TEXT,
@@ -63,14 +62,13 @@ async def migrate(db):
     )
     """)
 
-    await db.execute("""
+        await db.execute("""
     CREATE TABLE IF NOT EXISTS report_settings (
         guild_id TEXT PRIMARY KEY,
         channel_id TEXT
     )
     """)
-
-    version = 1
+        version = 1
 
     # =========================
     # v2 アナウンス設定永続化
@@ -116,6 +114,8 @@ async def migrate(db):
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
+
+        await db.execute("PRAGMA journal_mode=WAL")
 
         await db.execute("""
         CREATE TABLE IF NOT EXISTS db_meta (
@@ -411,7 +411,7 @@ async def report(
 
             log_embed.add_field(
                 name="日時",
-                value=str(datetime.now()),
+                value=str(datetime.now(JST).isoformat()),
                 inline=False
             )
 
@@ -512,7 +512,6 @@ class ReplyModal(discord.ui.Modal):
 class ReportView(discord.ui.View):
 
     def __init__(self):
-
         super().__init__(timeout=None)
 
     @discord.ui.button(
@@ -527,21 +526,16 @@ class ReportView(discord.ui.View):
     ):
 
         embed = interaction.message.embeds[0]
-
         report_id = embed.fields[0].value
 
-        async with aiosqlite.connect("bot.db") as db:
-
-            cur = await db.execute("""
-            SELECT user_id
-            FROM reports
-            WHERE id=?
-            """, (report_id,))
-
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "SELECT user_id FROM reports WHERE id=?",
+                (report_id,)
+            )
             row = await cur.fetchone()
 
         if not row:
-
             return await interaction.response.send_message(
                 "ユーザー取得失敗",
                 ephemeral=True
@@ -554,6 +548,9 @@ class ReportView(discord.ui.View):
 
         await interaction.response.send_modal(modal)
 
+    # =========================
+    # 調査中
+    # =========================
     @discord.ui.button(
         label="調査中",
         style=discord.ButtonStyle.secondary,
@@ -566,25 +563,34 @@ class ReportView(discord.ui.View):
     ):
 
         embed = interaction.message.embeds[0].copy()
+        report_id = embed.fields[0].value
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE reports SET status=? WHERE id=?",
+                ("調査中", report_id)
+            )
+            await db.commit()
 
         embed.color = 0xffff00
 
         embed.set_field_at(
-            3,
+            2,
             name="状態",
             value="調査中",
             inline=False
         )
 
-        await interaction.message.edit(
-            embed=embed
-        )
+        await interaction.message.edit(embed=embed)
 
         await interaction.response.send_message(
-            "調査中へ変更",
+            "調査中へ変更しました",
             ephemeral=True
         )
 
+    # =========================
+    # 対応済み
+    # =========================
     @discord.ui.button(
         label="対応済み",
         style=discord.ButtonStyle.success,
@@ -597,25 +603,34 @@ class ReportView(discord.ui.View):
     ):
 
         embed = interaction.message.embeds[0].copy()
+        report_id = embed.fields[0].value
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE reports SET status=? WHERE id=?",
+                ("対応済み", report_id)
+            )
+            await db.commit()
 
         embed.color = 0x00ff00
 
         embed.set_field_at(
-            3,
+            2,
             name="状態",
             value="対応済み",
             inline=False
         )
 
-        await interaction.message.edit(
-            embed=embed
-        )
+        await interaction.message.edit(embed=embed)
 
         await interaction.response.send_message(
-            "対応済みへ変更",
+            "対応済みに変更しました",
             ephemeral=True
         )
 
+    # =========================
+    # 却下
+    # =========================
     @discord.ui.button(
         label="却下",
         style=discord.ButtonStyle.danger,
@@ -628,22 +643,28 @@ class ReportView(discord.ui.View):
     ):
 
         embed = interaction.message.embeds[0].copy()
+        report_id = embed.fields[0].value
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE reports SET status=? WHERE id=?",
+                ("却下", report_id)
+            )
+            await db.commit()
 
         embed.color = 0xff0000
 
         embed.set_field_at(
-            3,
+            2,
             name="状態",
             value="却下",
             inline=False
         )
 
-        await interaction.message.edit(
-            embed=embed
-        )
+        await interaction.message.edit(embed=embed)
 
         await interaction.response.send_message(
-            "却下へ変更",
+            "却下に変更しました",
             ephemeral=True
         )
 
@@ -670,7 +691,11 @@ async def announce_setup(interaction: discord.Interaction,
         str(target.id)
     ))
 
-    await db.commit()
+        await db.commit()
+    announce_config[interaction.guild.id] = {
+    "source": source.id,
+    "target": target.id
+}
 
     await interaction.response.send_message("設定完了", ephemeral=True)
 
@@ -761,21 +786,54 @@ class AnnounceView(discord.ui.View):
 # =======================
 # スケジューラー
 # =======================
+
 @tasks.loop(seconds=5)
 async def scheduler():
+
     now = datetime.now(JST)
 
-    for item in scheduled[:]:
-        if now >= item["run_at"]:
-            guild = bot.get_guild(item["guild_id"])
-            conf = announce_config.get(item["guild_id"])
+    async with aiosqlite.connect(DB_PATH) as db:
 
-            if guild and conf:
-                ch = guild.get_channel(conf["target"])
-                if ch:
-                    await ch.send(item["content"])
+        cur = await db.execute("""
+        SELECT id, guild_id, content, run_at
+        FROM scheduled
+        WHERE run_at <= ?
+        """, (
+            now.isoformat(),
+        ))
 
-            scheduled.remove(item)
+        rows = await cur.fetchall()
+
+        for row in rows:
+
+            schedule_id = row[0]
+            guild_id = int(row[1])
+            content = row[2]
+
+            cur2 = await db.execute("""
+            SELECT target_id
+            FROM announce_settings
+            WHERE guild_id=?
+            """, (str(guild_id),))
+
+            conf = await cur2.fetchone()
+
+            if conf:
+
+                guild = bot.get_guild(guild_id)
+
+                if guild:
+                    ch = guild.get_channel(int(conf[0]))
+
+                    if ch:
+                        await ch.send(content)
+
+            await db.execute("""
+            DELETE FROM scheduled
+            WHERE id=?
+            """, (schedule_id,))
+
+        await db.commit()
 
 # =======================
 # メッセージ監視
@@ -801,15 +859,17 @@ async def on_message(message):
 async def on_ready():
     await init_db()
 
-    global report_channels, announce_config, scheduled
+    global report_channels, announce_config
 
     report_channels = await load_report_settings()
     announce_config = await load_announce_settings()
-    scheduled = await load_scheduled()
 
     bot.add_view(ReportView())
 
     if not scheduler.is_running():
         scheduler.start()
+
+    if FIRST_BOOT:
+        await bot.tree.sync()
 
     print("READY:", bot.user)
