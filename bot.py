@@ -874,4 +874,6 @@ async def on_ready():
 
     print("READY:", bot.user)
 
-bot.run("TOKEN")
+import os
+
+bot.run(os.getenv("TOKEN"))
