@@ -873,3 +873,5 @@ async def on_ready():
         await bot.tree.sync()
 
     print("READY:", bot.user)
+
+bot.run("TOKEN")
